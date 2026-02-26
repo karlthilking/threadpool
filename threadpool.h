@@ -5,17 +5,19 @@
 #include <stdlib.h>
 #include <stdint.h>
 
-typedef struct task_t {
-    void *(*f)(void *);
-    void *arg;
-    struct task_t *next;
-} task_t;
+typedef struct task_t task_t;
+struct task_t {
+    void    *(*f)(void *);
+    void    *arg;
+    task_t  *prev;
+};
 
 typedef struct {
     pthread_t           *threads;
     pthread_mutex_t     mtx;
     pthread_cond_t      cv;
     task_t              *head;
+    task_t              *tail;
     uint16_t            nthreads;
     uint8_t             stop;
 } thread_pool_t;
@@ -26,6 +28,7 @@ void
 thread_pool_init(thread_pool_t *tp, uint16_t nthreads)
 {
     tp->head = NULL;
+    tp->tail = NULL;
     tp->stop = 0;
     tp->nthreads = nthreads;
     tp->threads = (pthread_t *)malloc(sizeof(pthread_t) * nthreads);
@@ -57,14 +60,14 @@ thread_pool_worker(void *arg)
     for (;;) {
         task_t *task = NULL;
         pthread_mutex_lock(&tp->mtx);
-        while (tp->head == NULL && !tp->stop)
+        while (tp->tail == NULL && !tp->stop)
             pthread_cond_wait(&tp->cv, &tp->mtx);
-        if (tp->head == NULL && tp->stop) {
+        if (tp->tail == NULL && tp->stop) {
             pthread_mutex_unlock(&tp->mtx);
             return NULL;
         }
-        task = tp->head;
-        tp->head = tp->head->next;
+        task = tp->tail;
+        tp->tail = tp->tail->prev;
         pthread_mutex_unlock(&tp->mtx);
         task->f(task->arg);
         free(task);
@@ -77,10 +80,14 @@ thread_pool_add(thread_pool_t *tp, void *(*f)(void *arg), void *arg)
     task_t *task = (task_t *)malloc(sizeof(task_t));
     task->f = f;
     task->arg = arg;
-    
+    if (tp->tail == NULL) {
+        tp->head = task;
+        tp->tail = task;
+    } else {
+        tp->head->prev = task;
+        tp->head = task;
+    }
     pthread_mutex_lock(&tp->mtx);
-    task->next = tp->head;
-    tp->head = task;
     pthread_cond_signal(&tp->cv);
     pthread_mutex_unlock(&tp->mtx);
 }

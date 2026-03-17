@@ -23,6 +23,7 @@ thpool_t *thpool_create(u16 nr_thrds)
         for (int i = 0; i < nr_thrds; i++)
                 pthread_create(tp->thrds + i, NULL,
                                thpool_worker, (void *)tp); 
+        return tp;
 }
 
 void thpool_destroy(thpool_t *tp)
@@ -34,6 +35,13 @@ void thpool_destroy(thpool_t *tp)
 
         for (int i = 0; i < tp->nr_thrds; i++)
                 pthread_join(tp->thrds[i], NULL);
+        
+        task_t *t = tp->done->head;
+        while (t) {
+                task_t *tmp = t;
+                t = t->next;
+                free(tmp);
+        }
         
         pthread_cond_destroy(&tp->cond);
         pthread_mutex_destroy(&tp->q_mtx);
@@ -50,6 +58,7 @@ void *thpool_insert(thpool_t *tp, void *(*f)(void *), void *arg)
         task_t *task = malloc(sizeof(task_t));
         task->f = f;
         task->arg = arg;
+        task->next = NULL;
 
         pthread_mutex_lock(&tp->q_mtx);
         
@@ -57,6 +66,9 @@ void *thpool_insert(thpool_t *tp, void *(*f)(void *), void *arg)
                 tp->pending->front = task;
                 tp->pending->back = task;
                 tp->pending->empty = 0;
+        } else if (tp->pending->front == tp->pending->back) {
+                tp->pending->front->next = task;
+                tp->pending->back = task;
         } else {
                 tp->pending->back->next = task;
                 tp->pending->back = task;
@@ -110,10 +122,13 @@ void *thpool_worker(void *arg)
                 /* Pop task front task queue */
                 t = tp->pending->front;
                 task_t *next = tp->pending->front->next;
-                if (!next)
-                        tp->pending->empty = 1;
-                else 
+                if (next)
                         tp->pending->front = next;
+                else {
+                        tp->pending->empty = 1;
+                        tp->pending->front = NULL;
+                        tp->pending->back = NULL;
+                }
                 pthread_mutex_unlock(&tp->q_mtx);
                 
                 /* Invoke function and store result in task */
@@ -122,7 +137,10 @@ void *thpool_worker(void *arg)
 
                 /* Insert task into list of completed tasks */
                 pthread_mutex_lock(&tp->lst_mtx);
-                t->next = tp->done->head;
+                if (tp->done->head)
+                        t->next = tp->done->head;
+                else 
+                        t->next = NULL;
                 tp->done->head = t;
                 pthread_mutex_unlock(&tp->lst_mtx);
         }
